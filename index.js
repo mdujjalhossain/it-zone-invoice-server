@@ -27,6 +27,7 @@ const client = new MongoClient(uri, {
 async function run() {
     try {
         const invoiceCollection = client.db('ITZoneInvoiceDB').collection('invoices');
+        const productCollection = client.db('ITZoneInvoiceDB').collection('products');
 
         // POST Endpoint to save invoice data from POS Screen
         app.post('/invoices', async (req, res) => {
@@ -102,6 +103,43 @@ async function run() {
                 res.status(500).json({ success: false, error: err.message });
             }
         });
+
+        // 1. GET: Fetch all inventory products
+        app.get('/products', async (req, res) => {
+            try {
+                const result = await productCollection.find({}).sort({ _id: -1 }).toArray();
+                res.status(200).json({ success: true, data: result });
+            } catch (error) {
+                console.error('Error fetching products:', error);
+                res.status(500).json({ success: false, error: 'Internal Server Error' });
+            }
+        });
+
+        // 2. POST: Add a new product to inventory
+        app.post('/products', async (req, res) => {
+            try {
+                const productData = req.body;
+                
+                // Boundary check
+                if (!productData.name || productData.stock === undefined || productData.sellPrice === undefined) {
+                    return res.status(400).json({ success: false, error: 'Required fields are missing' });
+                }
+
+                productData.createdAt = new Date();
+                const result = await productCollection.insertOne(productData);
+                
+                res.status(201).json({
+                    success: true,
+                    message: 'Product added successfully',
+                    insertedId: result.insertedId,
+                    data: { ...productData, _id: result.insertedId }
+                });
+            } catch (error) {
+                console.error('Error adding product:', error);
+                res.status(500).json({ success: false, error: 'Internal Server Error' });
+            }
+        });
+
 
     }
     finally {
