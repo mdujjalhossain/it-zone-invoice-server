@@ -28,6 +28,31 @@ async function run() {
     try {
         const invoiceCollection = client.db('ITZoneInvoiceDB').collection('invoices');
 
+        // POST Endpoint to save invoice data from POS Screen
+        app.post('/invoices', async (req, res) => {
+            try {
+                const invoiceData = req.body;
+                
+                // Strict boundary validation: Check if items array exists and is not empty
+                if (!invoiceData.items || invoiceData.items.length === 0) {
+                    return res.status(400).json({ error: 'Invoice must contain at least one item' });
+                }
+
+                // Add server-side timestamp or metadata if needed
+                invoiceData.createdAt = new Date();
+
+                const result = await invoiceCollection.insertOne(invoiceData);
+                res.status(201).json({
+                    success: true,
+                    message: 'Invoice saved successfully to database',
+                    insertedId: result.insertedId
+                });
+            } catch (error) {
+                console.error('Error saving invoice:', error);
+                res.status(500).json({ error: 'Internal Server Error during database insertion' });
+            }
+        });
+
 
 
     }
