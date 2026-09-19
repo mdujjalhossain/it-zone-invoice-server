@@ -141,8 +141,55 @@ async function run() {
                 res.status(500).json({ success: false, error: 'Internal Server Error' });
             }
         });
+
+        // 3. PATCH: Update product stock quantity (Increment / Decrement)
+        app.patch('/products/:id/stock', async (req, res) => {
+            try {
+                const { id } = req.params;
+                const { amount } = req.body; // e.g. +5 or -2
+
+                if (typeof amount !== 'number') {
+                    return res.status(400).json({ success: false, error: 'Invalid amount provided' });
+                }
+
+                let query = {};
+                if (ObjectId.isValid(id)) {
+                    query = { _id: new ObjectId(id) };
+                } else {
+                    query = { id: id };
+                }
+
+                // First find the product to check current stock
+                const product = await productCollection.findOne(query);
+                if (!product) {
+                    return res.status(404).json({ success: false, error: 'Product not found!' });
+                }
+
+                const newStock = Number(product.stock) + amount;
+                if (newStock < 0) {
+                    return res.status(400).json({ success: false, error: 'Stock cannot be negative!' });
+                }
+
+                const result = await productCollection.findOneAndUpdate(
+                    query,
+                    { $set: { stock: newStock } },
+                    { returnDocument: 'after' }
+                );
+
+                const updatedProduct = result.value || result;
+
+                res.status(200).json({
+                    success: true,
+                    message: 'Stock updated successfully',
+                    data: updatedProduct
+                });
+            } catch (error) {
+                console.error('Error updating stock:', error);
+                res.status(500).json({ success: false, error: 'Internal Server Error' });
+            }
+        });
         
-        // 3. DELETE: Remove inventory product by ID (handles both MongoDB ObjectId and string id)
+        // 4. DELETE: Remove inventory product by ID (handles both MongoDB ObjectId and string id)
         app.delete('/products/:id', async (req, res) => {
             try {
                 const { id } = req.params;
@@ -242,6 +289,61 @@ async function run() {
                 res.status(500).json({ success: false, error: 'Internal Server Error' });
             }
         });
+
+
+
+        // GET: Fetch dynamic analytics / stats from database
+        app.get('/analytics/stats', async (req, res) => {
+            try {
+                const productCollection = client.db('ITZoneInvoiceDB').collection('products');
+                const serviceCollection = client.db('ITZoneInvoiceDB').collection('services');
+                const invoiceCollection = client.db('ITZoneInvoiceDB').collection('invoices');
+
+                // 1. Total Products Count
+                const totalProducts = await productCollection.countDocuments();
+
+                // 2. Service Counts
+                const activeServices = await serviceCollection.countDocuments({ status: { $ne: 'Delivered' } });
+                const readyServices = await serviceCollection.countDocuments({ status: 'Ready for Delivery' });
+
+                // 3. Today's Sales Calculation from Invoices
+                // Assuming invoices store date as 'YYYY-MM-DD' string or ISODate 'createdAt'
+                const todayStr = new Date().toISOString().split('T')[0];
+                
+                const startOfDay = new Date();
+                startOfDay.setHours(0, 0, 0, 0);
+                
+                const endOfDay = new Date();
+                endOfDay.setHours(23, 59, 59, 999);
+
+                const todaysInvoices = await invoiceCollection.find({
+                    $or: [
+                        { date: todayStr },
+                        { createdAt: { $gte: startOfDay, $lte: endOfDay } }
+                    ]
+                }).toArray();
+
+                // Sum up grandTotal / total from today's invoices
+                const todaysSales = todaysInvoices.reduce((sum, inv) => {
+                    const amount = Number(inv.grandTotal || inv.total || inv.totalAmount) || 0;
+                    return sum + amount;
+                }, 0);
+
+                res.status(200).json({
+                    success: true,
+                    data: {
+                        todaysSales,
+                        activeServicesCount: activeServices,
+                        readyServicesCount: readyServices,
+                        totalProductsCount: totalProducts
+                    }
+                });
+            } catch (error) {
+                console.error('Error fetching analytics stats:', error);
+                res.status(500).json({ success: false, error: 'Internal Server Error' });
+            }
+        });
+
 
 
     }
