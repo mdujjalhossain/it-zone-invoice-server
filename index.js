@@ -104,18 +104,8 @@ async function run() {
             }
         });
 
-        // 1. GET: Fetch all inventory products
-        app.get('/products', async (req, res) => {
-            try {
-                const result = await productCollection.find({}).sort({ _id: -1 }).toArray();
-                res.status(200).json({ success: true, data: result });
-            } catch (error) {
-                console.error('Error fetching products:', error);
-                res.status(500).json({ success: false, error: 'Internal Server Error' });
-            }
-        });
-
-        // 2. POST: Add a new product to inventory
+        
+        // 1. POST: Add a new product to inventory
         app.post('/products', async (req, res) => {
             try {
                 const productData = req.body;
@@ -124,7 +114,7 @@ async function run() {
                 if (!productData.name || productData.stock === undefined || productData.sellPrice === undefined) {
                     return res.status(400).json({ success: false, error: 'Required fields are missing' });
                 }
-
+                
                 productData.createdAt = new Date();
                 const result = await productCollection.insertOne(productData);
                 
@@ -137,6 +127,47 @@ async function run() {
             } catch (error) {
                 console.error('Error adding product:', error);
                 res.status(500).json({ success: false, error: 'Internal Server Error' });
+            }
+        });
+
+        // 2. GET: Fetch all inventory products
+        app.get('/products', async (req, res) => {
+            try {
+                const result = await productCollection.find({}).sort({ _id: -1 }).toArray();
+                res.status(200).json({ success: true, data: result });
+            } catch (error) {
+                console.error('Error fetching products:', error);
+                res.status(500).json({ success: false, error: 'Internal Server Error' });
+            }
+        });
+        
+        // 3. DELETE: Remove inventory product by ID (handles both MongoDB ObjectId and string id)
+        app.delete('/products/:id', async (req, res) => {
+            try {
+                const { id } = req.params;
+                let query = {};
+
+                if (ObjectId.isValid(id)) {
+                    query = { _id: new ObjectId(id) };
+                } else {
+                    query = { id: id }; // Fallback if old dummy numeric id is passed
+                }
+
+                const result = await productCollection.findOneAndDelete(query);
+                const deletedProduct = result.value || result;
+
+                if (!deletedProduct) {
+                    return res.status(404).json({ success: false, error: 'Product not found!' });
+                }
+
+                res.status(200).json({
+                    success: true,
+                    message: 'Product deleted successfully',
+                    data: deletedProduct
+                });
+            } catch (err) {
+                console.error('Delete Product Error:', err.message);
+                res.status(500).json({ success: false, error: err.message });
             }
         });
 
