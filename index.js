@@ -28,8 +28,9 @@ async function run() {
     try {
         const invoiceCollection = client.db('ITZoneInvoiceDB').collection('invoices');
         const productCollection = client.db('ITZoneInvoiceDB').collection('products');
+        const serviceCollection = client.db('ITZoneInvoiceDB').collection('services');
 
-        // POST Endpoint to save invoice data from POS Screen
+        // 1.POST: to save invoice data from POS Screen
         app.post('/invoices', async (req, res) => {
             try {
                 const invoiceData = req.body;
@@ -55,7 +56,7 @@ async function run() {
         });
 
 
-        // GET Endpoint to fetch all invoices from MongoDB
+        // 2. GET: to fetch all invoices from MongoDB
         app.get('/invoices', async (req, res) => {
             try {
                 // Fetch all invoices sorted by descending order (newest first)
@@ -72,7 +73,7 @@ async function run() {
         });
         
 
-        // DELETE: Delete invoice using the native MongoDB driver without Mongoose
+        // 3. DELETE: Delete invoice using the native MongoDB driver without Mongoose
         app.delete('/invoices/:id', async (req, res) => {
             try {
                 const { id } = req.params;
@@ -168,6 +169,77 @@ async function run() {
             } catch (err) {
                 console.error('Delete Product Error:', err.message);
                 res.status(500).json({ success: false, error: err.message });
+            }
+        });
+
+
+        // 1. POST: Create a new service ticket
+        app.post('/services', async (req, res) => {
+            try {
+                const ticketData = req.body;
+                
+                if (!ticketData.customerName || !ticketData.phone || !ticketData.deviceModel || !ticketData.issue) {
+                    return res.status(400).json({ success: false, error: 'Required fields are missing' });
+                }
+
+                ticketData.createdAt = new Date();
+                const result = await serviceCollection.insertOne(ticketData);
+                
+                res.status(201).json({
+                    success: true,
+                    message: 'Service ticket created successfully',
+                    data: { ...ticketData, _id: result.insertedId }
+                });
+            } catch (error) {
+                console.error('Error creating service ticket:', error);
+                res.status(500).json({ success: false, error: 'Internal Server Error' });
+            }
+        });
+
+        // 2. GET: Fetch all service tickets
+        app.get('/services', async (req, res) => {
+            try {
+                const tickets = await serviceCollection.find({}).sort({ _id: -1 }).toArray();
+                res.status(200).json({ success: true, data: tickets });
+            } catch (error) {
+                console.error('Error fetching service tickets:', error);
+                res.status(500).json({ success: false, error: 'Internal Server Error' });
+            }
+        });
+
+        // 3. PATCH: Update service ticket status
+        app.patch('/services/:id', async (req, res) => {
+            try {
+                const { id } = req.params;
+                const { status } = req.body;
+
+                let query = {};
+                if (ObjectId.isValid(id)) {
+                    query = { _id: new ObjectId(id) };
+                } else {
+                    query = { id: id };
+                }
+
+                const result = await serviceCollection.findOneAndUpdate(
+                    query,
+                    { $set: { status: status } },
+                    { returnDocument: 'after' }
+                );
+
+                const updatedTicket = result.value || result;
+
+                if (!updatedTicket) {
+                    return res.status(404).json({ success: false, error: 'Service ticket not found!' });
+                }
+
+                res.status(200).json({
+                    success: true,
+                    message: 'Status updated successfully',
+                    data: updatedTicket
+                });
+            } catch (error) {
+                console.error('Error updating status:', error);
+                res.status(500).json({ success: false, error: 'Internal Server Error' });
             }
         });
 
