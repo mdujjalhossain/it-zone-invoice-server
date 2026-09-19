@@ -1,5 +1,5 @@
 const express = require('express');
-const { MongoClient, ServerApiVersion } = require('mongodb');
+const { MongoClient, ServerApiVersion, ObjectId } = require('mongodb');
 const cors = require('cors');
 require('dotenv').config();
 const app = express()
@@ -54,6 +54,54 @@ async function run() {
         });
 
 
+        // GET Endpoint to fetch all invoices from MongoDB
+        app.get('/invoices', async (req, res) => {
+            try {
+                // Fetch all invoices sorted by descending order (newest first)
+                const invoices = await invoiceCollection.find({}).sort({ _id: -1 }).toArray();
+                
+                res.status(200).json({
+                    success: true,
+                    data: invoices
+                });
+            } catch (error) {
+                console.error('Error fetching invoices:', error);
+                res.status(500).json({ error: 'Internal Server Error while fetching invoices' });
+            }
+        });
+        
+
+        // DELETE: Delete invoice using the native MongoDB driver without Mongoose
+        app.delete('/invoices/:id', async (req, res) => {
+            try {
+                const { id } = req.params;
+                
+                let queryConditions = [{ invoiceNo: id }];
+                
+                if (ObjectId.isValid(id)) {
+                    queryConditions.push({ _id: new ObjectId(id) });
+                }
+
+                const result = await invoiceCollection.findOneAndDelete({
+                    $or: queryConditions
+                });
+
+                const deletedInvoice = result.value || result;
+
+                if (!deletedInvoice) {
+                    return res.status(404).json({ success: false, error: 'Invoice not found!' });
+                }
+
+                res.status(200).json({
+                    success: true,
+                    message: 'Invoice successfully deleted!',
+                    data: deletedInvoice
+                });
+            } catch (err) {
+                console.error('Delete Error:', err.message);
+                res.status(500).json({ success: false, error: err.message });
+            }
+        });
 
     }
     finally {
