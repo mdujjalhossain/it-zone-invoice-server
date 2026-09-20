@@ -3,7 +3,7 @@ const { MongoClient, ServerApiVersion, ObjectId } = require('mongodb');
 const cors = require('cors');
 require('dotenv').config();
 const app = express()
-const port = process.env.port || 3000
+const port = process.env.PORT || 3000
 
 // middleware
 const corsOptions = {
@@ -57,7 +57,6 @@ async function run() {
             }
         });
 
-
         // 2. GET: to fetch all invoices from MongoDB
         app.get('/invoices', async (req, res) => {
             try {
@@ -74,7 +73,6 @@ async function run() {
             }
         });
         
-
         // 3. DELETE: Delete invoice using the native MongoDB driver without Mongoose
         app.delete('/invoices/:id', async (req, res) => {
             try {
@@ -107,6 +105,7 @@ async function run() {
             }
         });
 
+       
         
         // 1. POST: Add a new product to inventory
         app.post('/products', async (req, res) => {
@@ -144,7 +143,7 @@ async function run() {
             }
         });
 
-        // 3. PATCH: Update product stock quantity (Increment / Decrement)
+        // 3. PATCH: Update product stock quantity (Fixed with proper field fallback)
         app.patch('/products/:id/stock', async (req, res) => {
             try {
                 const { id } = req.params;
@@ -161,20 +160,22 @@ async function run() {
                     query = { id: id };
                 }
 
-                // First find the product to check current stock
                 const product = await productCollection.findOne(query);
                 if (!product) {
                     return res.status(404).json({ success: false, error: 'Product not found!' });
                 }
 
-                const newStock = Number(product.stock) + amount;
+                // Fallback between stock and quantity to prevent NaN/undefined issues
+                const currentStock = Number(product.stock ?? product.quantity ?? 0);
+                const newStock = currentStock + amount;
+                
                 if (newStock < 0) {
                     return res.status(400).json({ success: false, error: 'Stock cannot be negative!' });
                 }
 
                 const result = await productCollection.findOneAndUpdate(
                     query,
-                    { $set: { stock: newStock } },
+                    { $set: { stock: newStock, quantity: newStock } }, // Sync both fields to avoid mismatch
                     { returnDocument: 'after' }
                 );
 
@@ -190,8 +191,8 @@ async function run() {
                 res.status(500).json({ success: false, error: 'Internal Server Error' });
             }
         });
-        
-        // 4. DELETE: Remove inventory product by ID (handles both MongoDB ObjectId and string id)
+
+        // 4. DELETE: Remove inventory product by ID (Robust Native Driver implementation)
         app.delete('/products/:id', async (req, res) => {
             try {
                 const { id } = req.params;
@@ -200,13 +201,14 @@ async function run() {
                 if (ObjectId.isValid(id)) {
                     query = { _id: new ObjectId(id) };
                 } else {
-                    query = { id: id }; // Fallback if old dummy numeric id is passed
+                    query = { id: id };
                 }
 
                 const result = await productCollection.findOneAndDelete(query);
-                const deletedProduct = result.value || result;
+                // Handle different MongoDB driver version result wrappers
+                const deletedProduct = result.value || result.ok ? result.value || query : null;
 
-                if (!deletedProduct) {
+                if (!deletedProduct && !result) {
                     return res.status(404).json({ success: false, error: 'Product not found!' });
                 }
 
@@ -220,6 +222,7 @@ async function run() {
                 res.status(500).json({ success: false, error: err.message });
             }
         });
+
 
 
         // 1. POST: Create a new service ticket
@@ -293,39 +296,123 @@ async function run() {
         });
 
 
-        // GET: Fetch dynamic analytics / stats from database
+        // GET: Fetch dynamic analytics / stats from database (Updated & Fixed)
         app.get('/analytics/stats', async (req, res) => {
-        try {
-            // 1. Today's Sales calculation
-            const todayStr = new Date().toISOString().split('T')[0];
-            const deliveredInvoices = await invoiceCollection.find({ currentDate: todayStr }).toArray();
-            const todaysSales = deliveredInvoices.reduce((sum, inv) => sum + (Number(inv.totalPayable) || 0), 0);
+            try {
+                // 1. Fixed local date calculation for Bangladesh timezone (UTC+6)
+                const d = new Date();
+                const localDate = new Date(d.getTime() - (d.getTimezoneOffset() * 60000));
+                const todayStr = localDate.toISOString().split('T')[0];
 
-            // 2. Active Services Count (without delivered and cancelled status)
-            const activeServicesCount = await serviceCollection.countDocuments({
-                status: { $nin: ['Delivered', 'Cancelled'] }
-            });
+                // Fetch today's invoices based on local corrected date string
+                const deliveredInvoices = await invoiceCollection.find({ currentDate: todayStr }).toArray();
+                const todaysSales = deliveredInvoices.reduce((sum, inv) => sum + (Number(inv.totalPayable) || 0), 0);
 
-            // 3. Ready for delivery count
-            const readyServicesCount = await serviceCollection.countDocuments({
-                status: 'Ready for Delivery'
-            });
+                // 2. Active Services Count (excluding Delivered and Cancelled)
+                const activeServicesCount = await serviceCollection.countDocuments({
+                    status: { $nin: ['Delivered', 'Cancelled'] }
+                });
 
-            // 4. Total products count
-            const totalProductsCount = await productCollection.countDocuments();
+                // 3. Ready for delivery count
+                const readyServicesCount = await serviceCollection.countDocuments({
+                    status: 'Ready for Delivery'
+                });
 
-            res.json({
-                success: true,
-                data: {
-                    todaysSales,
-                    activeServicesCount,
-                    readyServicesCount,
-                    totalProductsCount
+                // 4. Total products count from inventory
+                const totalProductsCount = await productCollection.countDocuments();
+
+                res.status(200).json({
+                    success: true,
+                    data: {
+                        todaysSales,
+                        activeServicesCount,
+                        readyServicesCount,
+                        totalProductsCount
+                    }
+                });
+            } catch (err) {
+                console.error('Analytics stats fetch error:', err.message);
+                res.status(500).json({ success: false, error: err.message });
+            }
+        });
+
+
+        // POST: Invoice with atomic stock decrement and dual-field synchronization
+        app.post('/invoices-with-stock', async (req, res) => {
+            const session = client.startSession();
+            try {
+                session.startTransaction();
+                const { invoiceNo, currentDate, customer, items, subtotal, discountVal, totalPayable } = req.body;
+
+                // Strict boundary check for items array
+                if (!Array.isArray(items) || items.length === 0) {
+                    throw new Error('Invoice payload must contain a valid non-empty items array.');
                 }
-            });
-        } catch (err) {
-            res.status(500).json({ success: false, error: err.message });
-        }
+
+                // 1. Verify and decrement stock for each item
+                for (const item of items) {
+                    if (!item.productId || typeof item.quantity !== 'number' || item.quantity <= 0) {
+                        throw new Error('Invalid product reference or quantity in invoice items.');
+                    }
+
+                    let productQuery = {};
+                    if (ObjectId.isValid(item.productId)) {
+                        productQuery = { _id: new ObjectId(item.productId) };
+                    } else {
+                        productQuery = { id: item.productId };
+                    }
+
+                    const product = await productCollection.findOne(productQuery, { session });
+                    
+                    // Fix: Check if product exists FIRST before evaluating properties
+                    if (!product) {
+                        throw new Error(`Product not found with reference: ${item.productId}`);
+                    }
+
+                    // Fallback between stock and quantity to ensure safe calculation
+                    const currentStock = Number(product.stock ?? product.quantity ?? 0);
+                    if (currentStock < item.quantity) {
+                        throw new Error(`Insufficient stock for item: ${product.name || item.productName || item.name}`);
+                    }
+
+                    const newStock = currentStock - item.quantity;
+                    
+                    // Sync both fields to maintain data consistency across different collection queries
+                    await productCollection.findOneAndUpdate(
+                        productQuery,
+                        { $set: { stock: newStock, quantity: newStock } },
+                        { session }
+                    );
+                }
+
+                // 2. Save Invoice
+                const newInvoice = {
+                    invoiceNo,
+                    currentDate,
+                    customer,
+                    items,
+                    subtotal,
+                    discountVal,
+                    totalPayable,
+                    createdAt: new Date()
+                };
+
+                const result = await invoiceCollection.insertOne(newInvoice, { session });
+
+                await session.commitTransaction();
+                session.endSession();
+                
+                res.status(201).json({ 
+                    success: true,
+                    message: 'Invoice saved and inventory updated successfully', 
+                    data: { ...newInvoice, _id: result.insertedId } 
+                });
+            } catch (error) {
+                await session.abortTransaction();
+                session.endSession();
+                console.error('Invoice with stock transaction error:', error.message);
+                res.status(400).json({ success: false, error: error.message });
+            }
         });
 
 
