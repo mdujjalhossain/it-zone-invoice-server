@@ -7,7 +7,9 @@ const port = process.env.port || 3000
 
 // middleware
 const corsOptions = {
-    origin: ['http://localhost:5173'],
+    origin: ['http://localhost:5173', 
+        'https://itzone-invoice.web.app', 
+        'https://itzone-invoice.firebaseapp.com'],
     credentials: true
 }
 app.use(cors(corsOptions));
@@ -291,57 +293,39 @@ async function run() {
         });
 
 
-
         // GET: Fetch dynamic analytics / stats from database
         app.get('/analytics/stats', async (req, res) => {
-            try {
-                const productCollection = client.db('ITZoneInvoiceDB').collection('products');
-                const serviceCollection = client.db('ITZoneInvoiceDB').collection('services');
-                const invoiceCollection = client.db('ITZoneInvoiceDB').collection('invoices');
+        try {
+            // 1. Today's Sales calculation
+            const todayStr = new Date().toISOString().split('T')[0];
+            const deliveredInvoices = await invoiceCollection.find({ currentDate: todayStr }).toArray();
+            const todaysSales = deliveredInvoices.reduce((sum, inv) => sum + (Number(inv.totalPayable) || 0), 0);
 
-                // 1. Total Products Count
-                const totalProducts = await productCollection.countDocuments();
+            // 2. Active Services Count (without delivered and cancelled status)
+            const activeServicesCount = await serviceCollection.countDocuments({
+                status: { $nin: ['Delivered', 'Cancelled'] }
+            });
 
-                // 2. Service Counts
-                const activeServices = await serviceCollection.countDocuments({ status: { $ne: 'Delivered' } });
-                const readyServices = await serviceCollection.countDocuments({ status: 'Ready for Delivery' });
+            // 3. Ready for delivery count
+            const readyServicesCount = await serviceCollection.countDocuments({
+                status: 'Ready for Delivery'
+            });
 
-                // 3. Today's Sales Calculation from Invoices
-                // Assuming invoices store date as 'YYYY-MM-DD' string or ISODate 'createdAt'
-                const todayStr = new Date().toISOString().split('T')[0];
-                
-                const startOfDay = new Date();
-                startOfDay.setHours(0, 0, 0, 0);
-                
-                const endOfDay = new Date();
-                endOfDay.setHours(23, 59, 59, 999);
+            // 4. Total products count
+            const totalProductsCount = await productCollection.countDocuments();
 
-                const todaysInvoices = await invoiceCollection.find({
-                    $or: [
-                        { date: todayStr },
-                        { createdAt: { $gte: startOfDay, $lte: endOfDay } }
-                    ]
-                }).toArray();
-
-                // Sum up grandTotal / total from today's invoices
-                const todaysSales = todaysInvoices.reduce((sum, inv) => {
-                    const amount = Number(inv.grandTotal || inv.total || inv.totalAmount) || 0;
-                    return sum + amount;
-                }, 0);
-
-                res.status(200).json({
-                    success: true,
-                    data: {
-                        todaysSales,
-                        activeServicesCount: activeServices,
-                        readyServicesCount: readyServices,
-                        totalProductsCount: totalProducts
-                    }
-                });
-            } catch (error) {
-                console.error('Error fetching analytics stats:', error);
-                res.status(500).json({ success: false, error: 'Internal Server Error' });
-            }
+            res.json({
+                success: true,
+                data: {
+                    todaysSales,
+                    activeServicesCount,
+                    readyServicesCount,
+                    totalProductsCount
+                }
+            });
+        } catch (err) {
+            res.status(500).json({ success: false, error: err.message });
+        }
         });
 
 
