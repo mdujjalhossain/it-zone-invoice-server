@@ -366,17 +366,23 @@ async function run() {
         });
 
 
-        // GET: Fetch dynamic analytics / stats from database (Updated & Fixed)
+        // GET: Fetch dynamic analytics / stats from database (Separated Product & Service Revenue)
         app.get('/analytics/stats', async (req, res) => {
             try {
-                // 1. Fixed local date calculation for Bangladesh timezone (UTC+6)
+                // 1. Local date calculation for Bangladesh timezone (UTC+6)
                 const d = new Date();
                 const localDate = new Date(d.getTime() - (d.getTimezoneOffset() * 60000));
                 const todayStr = localDate.toISOString().split('T')[0];
 
-                // Fetch today's invoices based on local corrected date string
-                const deliveredInvoices = await invoiceCollection.find({ currentDate: todayStr }).toArray();
-                const todaysSales = deliveredInvoices.reduce((sum, inv) => sum + (Number(inv.totalPayable) || 0), 0);
+                // Fetch today's invoices based on salesType or lack of salesType field
+                const allTodayInvoices = await invoiceCollection.find({ currentDate: todayStr }).toArray();
+                
+                // Separate Product Sales and Service Invoices
+                const productInvoices = allTodayInvoices.filter(inv => inv.salesType === 'product' || !inv.salesType);
+                const serviceInvoices = allTodayInvoices.filter(inv => inv.salesType === 'service');
+
+                const todaysSales = productInvoices.reduce((sum, inv) => sum + (Number(inv.totalPayable) || 0), 0);
+                const todaysServiceRevenue = serviceInvoices.reduce((sum, inv) => sum + (Number(inv.totalPayable) || 0), 0);
 
                 // 2. Active Services Count (excluding Delivered and Cancelled)
                 const activeServicesCount = await serviceCollection.countDocuments({
@@ -395,6 +401,7 @@ async function run() {
                     success: true,
                     data: {
                         todaysSales,
+                        todaysServiceRevenue,
                         activeServicesCount,
                         readyServicesCount,
                         totalProductsCount
