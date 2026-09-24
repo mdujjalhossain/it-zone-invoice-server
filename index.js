@@ -296,6 +296,76 @@ async function run() {
         });
 
 
+        // POST: Handle Service Invoices from POS Screen
+        app.post('/service-invoices', async (req, res) => {
+            try {
+                const { invoiceNo, currentDate, customer, items, subtotal, discountVal, totalPayable, ticketId } = req.body;
+
+                if (!Array.isArray(items) || items.length === 0) {
+                    return res.status(400).json({ success: false, error: 'Service invoice must contain items.' });
+                }
+
+                // 1. Save to Invoice Collection (For POS / Invoice History view)
+                const newInvoice = {
+                    invoiceNo,
+                    currentDate,
+                    customer,
+                    items,
+                    subtotal,
+                    discountVal,
+                    totalPayable,
+                    ticketId: ticketId || null,
+                    salesType: 'service',
+                    createdAt: new Date()
+                };
+
+                const invoiceResult = await invoiceCollection.insertOne(newInvoice);
+
+                // 2. Sync with serviceCollection
+                if (ticketId) {
+                    // If billed via an existing ticket selected in POS dropdown
+                    let ticketQuery = {};
+                    if (ObjectId.isValid(ticketId)) {
+                        ticketQuery = { _id: new ObjectId(ticketId) };
+                    } else {
+                        ticketQuery = { id: ticketId };
+                    }
+
+                    await serviceCollection.findOneAndUpdate(
+                        ticketQuery,
+                        { $set: { status: 'Delivered', cost: totalPayable } }
+                    );
+                } else {
+                    // Fallback: Direct POS service billing without prior ticket creation
+                    const serviceTicket = {
+                        id: invoiceNo, // Using invoiceNo as the ticket ID for direct POS sales
+                        invoiceNo,
+                        customerName: customer?.name || 'Walk-in Customer',
+                        phone: customer?.phone || 'N/A',
+                        deviceModel: items[0]?.deviceModel || 'General Service / POS Sale',
+                        issue: items.map(i => i.productName || i.name).join(', '),
+                        status: 'Delivered', // Direct POS billing implies service is completed/delivered
+                        cost: totalPayable,
+                        advance: totalPayable, // Full paid on POS
+                        date: currentDate,
+                        createdAt: new Date()
+                    };
+
+                    await serviceCollection.insertOne(serviceTicket);
+                }
+
+                res.status(201).json({
+                    success: true,
+                    message: 'Service invoice saved and synced with service tracking successfully',
+                    data: { ...newInvoice, _id: invoiceResult.insertedId }
+                });
+            } catch (error) {
+                console.error('Service invoice sync error:', error.message);
+                res.status(500).json({ success: false, error: error.message });
+            }
+        });
+
+
         // GET: Fetch dynamic analytics / stats from database (Updated & Fixed)
         app.get('/analytics/stats', async (req, res) => {
             try {
