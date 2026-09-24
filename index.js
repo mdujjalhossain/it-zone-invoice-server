@@ -366,35 +366,30 @@ async function run() {
         });
 
 
-        // GET: Fetch dynamic analytics / stats from database (Separated Product & Service Revenue)
+        // GET: Fetch dynamic analytics / stats from database
         app.get('/analytics/stats', async (req, res) => {
             try {
-                // 1. Local date calculation for Bangladesh timezone (UTC+6)
                 const d = new Date();
                 const localDate = new Date(d.getTime() - (d.getTimezoneOffset() * 60000));
                 const todayStr = localDate.toISOString().split('T')[0];
 
-                // Fetch today's invoices based on salesType or lack of salesType field
                 const allTodayInvoices = await invoiceCollection.find({ currentDate: todayStr }).toArray();
                 
-                // Separate Product Sales and Service Invoices
+                // Product sales: salesType is 'product' OR salesType field doesn't exist
                 const productInvoices = allTodayInvoices.filter(inv => inv.salesType === 'product' || !inv.salesType);
                 const serviceInvoices = allTodayInvoices.filter(inv => inv.salesType === 'service');
 
                 const todaysSales = productInvoices.reduce((sum, inv) => sum + (Number(inv.totalPayable) || 0), 0);
                 const todaysServiceRevenue = serviceInvoices.reduce((sum, inv) => sum + (Number(inv.totalPayable) || 0), 0);
 
-                // 2. Active Services Count (excluding Delivered and Cancelled)
                 const activeServicesCount = await serviceCollection.countDocuments({
                     status: { $nin: ['Delivered', 'Cancelled'] }
                 });
 
-                // 3. Ready for delivery count
                 const readyServicesCount = await serviceCollection.countDocuments({
                     status: 'Ready for Delivery'
                 });
 
-                // 4. Total products count from inventory
                 const totalProductsCount = await productCollection.countDocuments();
 
                 res.status(200).json({
@@ -419,7 +414,8 @@ async function run() {
             const session = client.startSession();
             try {
                 session.startTransaction();
-                const { invoiceNo, currentDate, customer, items, subtotal, discountVal, totalPayable } = req.body;
+                // Ensure salesType is extracted from request or defaulted to 'product'
+                const { invoiceNo, currentDate, customer, items, subtotal, discountVal, totalPayable, salesType } = req.body;
 
                 // Strict boundary check for items array
                 if (!Array.isArray(items) || items.length === 0) {
@@ -441,12 +437,10 @@ async function run() {
 
                     const product = await productCollection.findOne(productQuery, { session });
                     
-                    // Fix: Check if product exists FIRST before evaluating properties
                     if (!product) {
                         throw new Error(`Product not found with reference: ${item.productId}`);
                     }
 
-                    // Fallback between stock and quantity to ensure safe calculation
                     const currentStock = Number(product.stock ?? product.quantity ?? 0);
                     if (currentStock < item.quantity) {
                         throw new Error(`Insufficient stock for item: ${product.name || item.productName || item.name}`);
@@ -454,7 +448,6 @@ async function run() {
 
                     const newStock = currentStock - item.quantity;
                     
-                    // Sync both fields to maintain data consistency across different collection queries
                     await productCollection.findOneAndUpdate(
                         productQuery,
                         { $set: { stock: newStock, quantity: newStock } },
@@ -462,7 +455,7 @@ async function run() {
                     );
                 }
 
-                // 2. Save Invoice
+                // 2. Save Invoice with explicit salesType
                 const newInvoice = {
                     invoiceNo,
                     currentDate,
@@ -471,6 +464,7 @@ async function run() {
                     subtotal,
                     discountVal,
                     totalPayable,
+                    salesType: salesType || 'product', // <--- Eta add kore dilam
                     createdAt: new Date()
                 };
 
